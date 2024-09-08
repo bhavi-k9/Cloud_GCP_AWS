@@ -1,0 +1,128 @@
+#kinit -kt gdscptem.keytab gdscptem
+file=$1
+email_id=$2
+key=$3
+log_path="/u/bkaminen/ierp/prod/load_2/logs/"  ###create log path and add
+tmstp=$(date +'%Y%m%d%H%M%S')
+echo -e "============History load process begins============" >${log_path}Historyload_${tmstp}.log
+source ~/.bashrc
+gcloud auth activate-service-account --key-file ${key}
+gcloud config set project prj-dfdl-407-ierpf-p-407  ### project ID
+if [ $? -eq 0 ]
+then
+echo -e "===GCP authenticated===">>${log_path}Historyload_${tmstp}.log
+else
+echo -e "GCP authentication failed">>${log_path}Historyload_${tmstp}.log
+exit 1
+fi
+while IFS=, read f1 f2 f3 f4 f5 f6 f7
+do
+trg_db=$f1
+src_db=$f2
+tbl_name=$f3
+hadoop_path=$f4
+gcs_path=$f5
+dataset_name=$f6
+bq_tbl_name=$f7
+time1=$(date '+%A %W %Y %X')
+echo -e "History table creation for ${tbl_name} has started at $(date +'%Y%m%d%H%M%S')" >>${log_path}Historyload_${tmstp}.log
+hive -e "CREATE EXTERNAL TABLE IF NOT EXISTS ${trg_db}.${tbl_name} STORED AS ORC AS SELECT * FROM ${src_db}.${tbl_name};" >>${log_path}Historyload_${tmstp}.log
+hive_count_source=$(hive --showheader=false --outputformat=csv2 -e "set mapreduce.map.memory.mb=8192;set mapreduce.map.java.opts=-Xmx6144m;set mapreduce.map.memory.mb=8192;set mapreduce.reduce.java.opts=-Xmx6144m;select count(*) from ${src_db}.${tbl_name}"| grep -o '[0-9]*')
+hive_count_target=$(hive --showheader=false --outputformat=csv2 -e "set mapreduce.map.memory.mb=8192;set mapreduce.map.java.opts=-Xmx6144m;set mapreduce.map.memory.mb=8192;set mapreduce.reduce.java.opts=-Xmx6144m;select count(*) from ${trg_db}.${tbl_name}"| grep -o '[0-9]*')
+echo -e "\n The hive count for source table ${src_db}.${tbl_name} is: "$hive_count_source>>${log_path}Historyload_${tmstp}.log
+echo -e "\n The hive count for target table ${trg_db}.${tbl_name} is: "$hive_count_target>>${log_path}Historyload_${tmstp}.log
+if [ $hive_count_source -eq $hive_count_target ]
+then
+echo -e "Source and target count are same. Proceeding with next steps.">>${log_path}Historyload_${tmstp}.log
+else
+echo -e "Source and target count are different. Kindly validate.">>${log_path}Historyload_${tmstp}.log
+mail -a ${log_path}Historyload_${tmstp}.log -s "History Load Status" ${email_id}@ford.com <<< "Kindly refer the attached log for History Load Status."
+exit 1
+fi
+echo -e "DISTCP for  ${tbl_name} has started at $(date '+%X')" >>${log_path}Historyload_${tmstp}.log
+hadoop distcp -Dfs.gs.auth.service.account.json.keyfile=${key} ${hadoop_path}/${tbl_name} gs://${gcs_path}/${tbl_name}/
+if [ $? -eq 0 ]
+then
+echo -e "Distcp completed for ${tbl_name} at $(date '+%X')\n">>${log_path}Historyload_${tmstp}.log
+else
+echo -e "Distcp job failed for ${tbl_name}">>${log_path}Historyload_${tmstp}.log
+mail -a ${log_path}_Historyload_${tmstp}.log -s "History Load Status" ${email_id}@ford.com <<< "Kindly refer the attached log for History Load Status."
+exit 1
+fi
+echo -e "BQ Load ${bq_tbl_name} has started at $(date +'+%X')" >>${log_path}Historyload_${tmstp}.log
+echo -e "bq load --source_format=ORC" ${dataset_name}.${bq_tbl_name} "gs://"${gcs_path}/${tbl_name}"/*"> bq_load.sh
+sh bq_load.sh
+if [ $? -eq 0 ]
+then
+echo -e "BQ table loaded successfully for ${bq_tbl_name} at $(date +'+%X')\n">>${log_path}Historyload_${tmstp}.log
+else
+echo -e "BQ table load failed for ${bq_tbl_name}\n">>${log_path}Historyload_${tmstp}.log
+mail -a ${log_path}Historyload_${tmstp}.log -s "History Load Status" ${email_id}@ford.com <<< "Kindly refer the attached log for History Load Status."
+exit 1
+fi
+done < "$file"
+mail -a ${log_path}Historyload_${tmstp}.log -s "History Load Status" ${email_id}@ford.com <<< "Kindly refer the attached log for History Load Status."
+
+
+
+#################config.txt###############
+
+dsc10931_ierp_lz_db_his,dsc10931_ierp_lz_db,vbrp,/project/dsc/prod/landing_zone/10931_ierp/dsc10931_ierp_lz_db_his,prj-dfdl-407-ierpf-p-407-prod-data/ierpf/initial/vbrp,bq_407_ierpf_history,VBRP_his
+dsc10931_ierp_lz_db_his,dsc10931_ierp_lz_db,rseg,/project/dsc/prod/landing_zone/10931_ierp/dsc10931_ierp_lz_db_his,prj-dfdl-407-ierpf-p-407-prod-data/ierpf/initial/rseg,bq_407_ierpf_history,RSEG_his
+
+
+
+
+#######hadoop to csv#######
+
+import pyspark
+from pyspark.sql import SparkSession
+from pyspark import SparkContext, SparkConf
+from pyspark.context import SparkContext
+from pyspark.sql import HiveContext
+from pyspark.sql.functions import*
+import sys,os
+import time
+
+startTime = time.time()
+dbname = "10327_eci_cdr_lz_db"
+#dbname = sys.argv[1]
+
+
+#spark = SparkSession.builder.master("local").appName("HiveToCSV").enableHiveSupport().getOrCreate()
+
+#import pandas as pd
+#df = pd.read_csv("/u/mvelayu1/GCP_Practice/input.txt", sep=" ", header=None)
+#print(df)
+spark = SparkSession.builder.master("local").appName("HiveToCSV").enableHiveSupport().getOrCreate()
+
+#conf = SparkConf().setAppName("Collinear Points")
+sc = spark.sparkContext
+# Read file into RDD
+lines = sc.textFile("file:///u/mvelayu1/GCP_Practice/input.txt")
+
+# Call collect() to get all data
+llist = lines.collect()
+
+# print line one by line
+for line in llist:
+    #print(line)
+    tablename = line
+    print tablename
+    #Reading the hive table
+    df = spark.sql("select * from {}.{}".format(dbname,tablename))
+    df.show()
+
+    #Writing Hive table into text delimited file
+    #df.write.options(header='True', delimiter=',').mode("overwrite").csv(path).coalesce(3)
+    path = "/user/bkaminen/{}.csv".format(tablename)
+    df.coalesce(1).write.mode("overwrite").format("csv").option("header", "true").save(path)
+endTime = time.time()
+
+# get the execution time
+elapsed_time = endTime - startTime
+print('Execution time:', elapsed_time, 'seconds')
+
+
+
+
