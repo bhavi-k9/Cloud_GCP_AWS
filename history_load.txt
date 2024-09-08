@@ -2,7 +2,7 @@
 file=$1
 email_id=$2
 key=$3
-log_path="/u/bkaminen/ierp/prod/load_2/logs/"  ###create log path and add
+log_path="/u/####/ierp/prod/load_2/logs/"  ###create log path and add
 tmstp=$(date +'%Y%m%d%H%M%S')
 echo -e "============History load process begins============" >${log_path}Historyload_${tmstp}.log
 source ~/.bashrc
